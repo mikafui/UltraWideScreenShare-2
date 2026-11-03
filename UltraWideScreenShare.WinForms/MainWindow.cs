@@ -340,7 +340,7 @@ namespace UltraWideScreenShare.WinForms
 
         private void closeButton_Click(object sender, EventArgs e) => Close();
 
-        protected override void OnClosing(CancelEventArgs e)
+        protected override void OnFormClosing(FormClosingEventArgs e)
         {
             SaveWindowPosition();
             _dispatcherTimer.Stop();
@@ -350,7 +350,7 @@ namespace UltraWideScreenShare.WinForms
             GlobalHotkey.Unregister(Handle);
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
-            base.OnClosing(e);
+            base.OnFormClosing(e);
         }
         private void minimizeButton_Click(object sender, EventArgs e) => HideToTray();
 
