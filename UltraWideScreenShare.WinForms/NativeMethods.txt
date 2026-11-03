@@ -16,3 +16,5 @@ MonitorFromWindow
 EnumDisplaySettings
 GetMonitorInfo
 MagSetWindowTransform
+RegisterHotKey
+UnregisterHotKey
