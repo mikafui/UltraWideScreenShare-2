@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace UltraWideScreenShare.WinForms
 {
@@ -10,6 +11,7 @@ namespace UltraWideScreenShare.WinForms
         public int Height { get; set; }
         public bool Maximized { get; set; }
 
+        [JsonIgnore]
         public Rectangle Bounds => new Rectangle(Left, Top, Width, Height);
 
         public bool IsVisibleOnAnyScreen() => Screen.AllScreens.Any(s =>
@@ -33,6 +35,7 @@ namespace UltraWideScreenShare.WinForms
         public string? LastLayout { get; set; }
         public bool AutostartInitialized { get; set; }
         public string Hotkey { get; set; } = "Win+J";
+        public bool ShowTitleBar { get; set; } = true;
 
         public static string CurrentLayout => string.Join(";", Screen.AllScreens
             .Select(s => s.Bounds)

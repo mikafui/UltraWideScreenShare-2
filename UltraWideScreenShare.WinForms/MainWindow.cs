@@ -21,25 +21,26 @@ namespace UltraWideScreenShare.WinForms
         private bool _startInTray;
         private NotifyIcon _trayIcon = null!;
         private ToolStripMenuItem _autostartMenuItem = null!;
-        private readonly Timer _displayChangedTimer = new Timer() { Interval = 1500 };
+        private readonly Timer _displayChangedTimer = new Timer() { Interval = 1000 };
+        private DateTime _restoreDeadline;
+        private string? _settlingLayout;
         private bool _applyingPlacement;
+        private bool _userResizing;
 
         public MainWindow(bool startInTray = false)
         {
             _startInTray = startInTray;
             InitializeComponent();
             TitleBar.BringToFront();
+            TitleBar.Visible = _settings.ShowTitleBar;
             InitializePaddingsForBorders();
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             RestoreWindowPosition();
             InitializeAutostart();
             InitializeTrayIcon();
-            _displayChangedTimer.Tick += (s, e) =>
-            {
-                _displayChangedTimer.Stop();
-                OnMonitorLayoutChanged();
-            };
+            _displayChangedTimer.Tick += (s, e) => OnMonitorLayoutTick();
             SystemEvents.DisplaySettingsChanged += SystemEvents_DisplaySettingsChanged;
+            Log.Write($"start, layout {AppSettings.CurrentLayout}, bounds {Bounds}");
         }
 
         private void RestoreWindowPosition()
@@ -66,27 +67,62 @@ namespace UltraWideScreenShare.WinForms
             if (_applyingPlacement) return;
             _settings.SetPlacement(_lastNormalBounds, _wasMaximized);
             _settings.Save();
+            Log.Write($"saved {_lastNormalBounds} maximized={_wasMaximized} for layout {AppSettings.CurrentLayout}");
         }
 
-        // Windows rearranges windows on its own after monitors change, so wait until that settled
+        // Monitors (e.g. behind a KVM switch) can take a few seconds to come back and Windows
+        // rearranges windows on its own meanwhile, so keep restoring the saved placement for a while.
         private void SystemEvents_DisplaySettingsChanged(object? sender, EventArgs e)
         {
             if (!IsHandleCreated) return;
             BeginInvoke(() =>
             {
-                _displayChangedTimer.Stop();
+                Log.Write($"display settings changed, layout {AppSettings.CurrentLayout}, bounds {Bounds}");
+                _settlingLayout = null;
+                _restoreDeadline = DateTime.Now.AddSeconds(15);
                 _displayChangedTimer.Start();
             });
         }
 
-        private void OnMonitorLayoutChanged()
+        private void OnMonitorLayoutTick()
         {
-            var placement = _settings.GetPlacement(allowFallback: false);
-            if (placement is null) return; // unknown layout - keep whatever Windows did
+            if (DateTime.Now > _restoreDeadline)
+            {
+                _displayChangedTimer.Stop();
+                return;
+            }
 
+            // wait until the layout is the same for two ticks in a row
+            var layout = AppSettings.CurrentLayout;
+            if (layout != _settlingLayout)
+            {
+                _settlingLayout = layout;
+                return;
+            }
+
+            var placement = _settings.GetPlacement(allowFallback: false);
+            if (placement is null || _userResizing) return; // unknown layout - keep whatever Windows did
+
+            if (!Visible)
+            {
+                _lastNormalBounds = placement.Bounds;
+                _wasMaximized = placement.Maximized;
+                return;
+            }
+
+            if (IsAtPlacement(placement)) return;
+            Log.Write($"restoring {placement.Bounds} maximized={placement.Maximized} for layout {layout}, was {Bounds}");
             _lastNormalBounds = placement.Bounds;
             _wasMaximized = placement.Maximized;
-            if (Visible) ApplyLastPlacement();
+            ApplyLastPlacement();
+        }
+
+        private bool IsAtPlacement(WindowPlacement placement)
+        {
+            if (placement.Maximized)
+                return WindowState == FormWindowState.Maximized
+                    && Screen.FromRectangle(placement.Bounds).DeviceName == Screen.FromControl(this).DeviceName;
+            return WindowState == FormWindowState.Normal && Bounds == placement.Bounds;
         }
 
         private void ApplyLastPlacement()
@@ -161,6 +197,14 @@ namespace UltraWideScreenShare.WinForms
 
             var menu = new ContextMenuStrip();
             menu.Items.Add($"Open ({_settings.Hotkey})", null, (s, e) => ShowFromTray());
+            var titleBarMenuItem = new ToolStripMenuItem("Show title bar") { CheckOnClick = true, Checked = _settings.ShowTitleBar };
+            titleBarMenuItem.CheckedChanged += (s, e) =>
+            {
+                TitleBar.Visible = _settings.ShowTitleBar = titleBarMenuItem.Checked;
+                _settings.Save();
+            };
+
+            menu.Items.Add(titleBarMenuItem);
             menu.Items.Add(_autostartMenuItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, (s, e) => Close());
@@ -180,6 +224,13 @@ namespace UltraWideScreenShare.WinForms
 
         public void ShowFromTray()
         {
+            // Windows may have moved the hidden window around while monitors changed
+            var placement = _settings.GetPlacement(allowFallback: false);
+            if (!Visible && placement is not null)
+            {
+                _lastNormalBounds = placement.Bounds;
+                _wasMaximized = placement.Maximized;
+            }
             _applyingPlacement = true;
             if (!Visible) WindowState = FormWindowState.Normal;
             Show();
@@ -252,7 +303,7 @@ namespace UltraWideScreenShare.WinForms
             _dispatcherTimer.Tick += (s, a) =>
             {
                 _magnifier.UpdateMagnifierWindow();
-                if (magnifierPanel.Bounds.Contains(PointToClient(Cursor.Position)) && !TitleBar.Bounds.Contains(PointToClient(Cursor.Position)))
+                if (magnifierPanel.Bounds.Contains(PointToClient(Cursor.Position)) && !(TitleBar.Visible && TitleBar.Bounds.Contains(PointToClient(Cursor.Position))))
                 {
                     if (!_isTransparent)
                     { this.SetTransparency(_isTransparent = true); Trace.WriteLine("enter"); }
@@ -270,10 +321,15 @@ namespace UltraWideScreenShare.WinForms
             };
         }
 
-        private void MainWindow_ResizeBegin(object sender, EventArgs e) => _magnifier.HideMagnifier();
+        private void MainWindow_ResizeBegin(object sender, EventArgs e)
+        {
+            _userResizing = true;
+            _magnifier.HideMagnifier();
+        }
 
         private void MainWindow_ResizeEnd(object sender, EventArgs e)
         {
+            _userResizing = false;
             _showMagnifierScheduled = true;
             SaveWindowPosition();
         }
